@@ -9,13 +9,25 @@
 #include <thread>
 #include <chrono>
 #include <stdexcept>
+#include <filesystem>
 
 #pragma comment(lib, "ws2_32.lib")
 
 #define BUFFER_SIZE 4096
 #define SERVER_PORT 9295
 
-using namespace std;
+namespace fs = std::filesystem;
+
+std::string unique_path(fs::path path) {
+    auto root = (path.parent_path() / path.stem()).string();
+    auto ext = path.extension().string();
+    auto cnt = 2;
+    while (fs::exists(path)) {
+        path = root + "_" + std::to_string(cnt) + ext;
+        cnt++;
+    }
+    return path.string();
+}
 
 class SocketWrapper {
 public:
@@ -127,21 +139,21 @@ public:
     }
 };
 
-bool send_file(SOCKET sock, const string& file_path) {
+bool send_file(SOCKET sock, const fs::path& file_path) {
     // Open file in binary mode
-    ifstream file(file_path, ios::binary);
+    std::ifstream file(file_path, std::ios::binary);
     if (!file.is_open()) {
-        cerr << "Failed to open file: " << file_path << endl;
+        std::cerr << "Failed to open file: " << file_path << std::endl;
         return false;
     }
 
-    string file_name = file_path.substr(file_path.find_last_of("/\\") + 1);
+    std::string file_name = file_path.filename().string();
 
     auto sock_wrap = SocketWrapper(sock);
     sock_wrap.send_string(file_name);
     sock_wrap.send_file(file);
 
-    cout << "File sent successfully: " << file_path << endl;
+    std::cout << "File sent successfully: " << file_path << std::endl;
     return true;
 }
 
@@ -149,17 +161,18 @@ bool receive_file(SOCKET sock) {
     auto sock_wrap = SocketWrapper(sock);
 
     std::string file_name = sock_wrap.recv_string();
-    ofstream file(file_name, ios::binary);
+    file_name = unique_path(file_name);
+    std::ofstream file(file_name, std::ios::binary);
 
     // Open file for writing
     if (!file.is_open()) {
-        cerr << "Failed to create file: " << file_name << endl;
+        std::cerr << "Failed to create file: " << file_name << std::endl;
         return false;
     }
 
     sock_wrap.recv_file(file);
 
-    cout << "File received successfully: " << file_name << endl;
+    std::cout << "File received successfully: " << file_name << std::endl;
     return true;
 }
 
@@ -171,14 +184,14 @@ void server_mode() {
 
     // Initialize Winsock
     if (WSAStartup(MAKEWORD(2, 2), &wsa_data) != 0) {
-        cerr << "Failed to initialize Winsock" << endl;
+        std::cerr << "Failed to initialize Winsock" << std::endl;
         return;
     }
 
     // Create socket
     server_sock = socket(AF_INET, SOCK_STREAM, 0);
     if (server_sock == INVALID_SOCKET) {
-        cerr << "Failed to create socket" << endl;
+        std::cerr << "Failed to create socket" << std::endl;
         WSACleanup();
         return;
     }
@@ -191,7 +204,7 @@ void server_mode() {
 
     // Bind socket
     if (bind(server_sock, (struct sockaddr*)&server_addr, sizeof(server_addr)) == SOCKET_ERROR) {
-        cerr << "Failed to bind socket" << endl;
+        std::cerr << "Failed to bind socket" << std::endl;
         closesocket(server_sock);
         WSACleanup();
         return;
@@ -199,23 +212,23 @@ void server_mode() {
 
     // Listen for connections
     if (listen(server_sock, 1) == SOCKET_ERROR) {
-        cerr << "Failed to listen on socket" << endl;
+        std::cerr << "Failed to listen on socket" << std::endl;
         closesocket(server_sock);
         WSACleanup();
         return;
     }
 
-    cout << "Server listening on port " << SERVER_PORT << endl;
+    std::cout << "Server listening on port " << SERVER_PORT << std::endl;
 
     while (true) {
         // Accept connection
         client_sock = accept(server_sock, (struct sockaddr*)&client_addr, &client_len);
         if (client_sock == INVALID_SOCKET) {
-            cerr << "Accept failed" << endl;
+            std::cerr << "Accept failed" << std::endl;
             continue;
         }
 
-        cout << "Client connected from " << inet_ntoa(client_addr.sin_addr) << endl;
+        std::cout << "Client connected from " << inet_ntoa(client_addr.sin_addr) << std::endl;
 
         // Handle client
         receive_file(client_sock);
@@ -227,7 +240,7 @@ void server_mode() {
     WSACleanup();
 }
 
-void client_mode(const string& server_ip, const vector<string>& file_paths) {
+void client_mode(const std::string& server_ip, const std::vector<std::string>& file_paths) {
     WSADATA wsa_data;
     SOCKET client_sock;
     struct sockaddr_in server_addr;
@@ -235,14 +248,14 @@ void client_mode(const string& server_ip, const vector<string>& file_paths) {
 
     // Initialize Winsock
     if (WSAStartup(MAKEWORD(2, 2), &wsa_data) != 0) {
-        cerr << "Failed to initialize Winsock" << endl;
+        std::cerr << "Failed to initialize Winsock" << std::endl;
         return;
     }
 
     // Create socket
     client_sock = socket(AF_INET, SOCK_STREAM, 0);
     if (client_sock == INVALID_SOCKET) {
-        cerr << "Socket creation failed" << endl;
+        std::cerr << "Socket creation failed" << std::endl;
         WSACleanup();
         return;
     }
@@ -256,28 +269,28 @@ void client_mode(const string& server_ip, const vector<string>& file_paths) {
     // Use inet_addr instead of inet_pton for better Windows compatibility
     server_addr.sin_addr.s_addr = inet_addr(server_ip.c_str());
     if (server_addr.sin_addr.s_addr == INADDR_NONE) {
-        cerr << "Invalid IP address: " << server_ip << endl;
+        std::cerr << "Invalid IP address: " << server_ip << std::endl;
         closesocket(client_sock);
         WSACleanup();
         return;
     }
 
     // Connect to server
-    cout << "Connecting to server at " << server_ip << ":" << SERVER_PORT << endl;
+    std::cout << "Connecting to server at " << server_ip << ":" << SERVER_PORT << std::endl;
     result = connect(client_sock, (struct sockaddr*)&server_addr, sizeof(server_addr));
     if (result == SOCKET_ERROR) {
-        cerr << "Connection failed" << endl;
+        std::cerr << "Connection failed" << std::endl;
         closesocket(client_sock);
         WSACleanup();
         return;
     }
 
-    cout << "Connected to server successfully" << endl;
+    std::cout << "Connected to server successfully" << std::endl;
 
     // Send files
-    for (const string& file_path : file_paths) {
+    for (const std::string& file_path : file_paths) {
         if (!send_file(client_sock, file_path)) {
-            cerr << "Failed to send file: " << file_path << endl;
+            std::cerr << "Failed to send file: " << file_path << std::endl;
         }
     }
 
@@ -288,22 +301,22 @@ void client_mode(const string& server_ip, const vector<string>& file_paths) {
 int main(int argc, char* argv[]) {
     if (argc == 1) {
         // Server mode
-        cout << "Starting server mode..." << endl;
+        std::cout << "Starting server mode..." << std::endl;
         server_mode();
     } else if (argc > 2) {
         // Client mode
-        string server_ip = argv[1];
-        vector<string> file_paths;
+        std::string server_ip = argv[1];
+        std::vector<std::string> file_paths;
         for (int i = 2; i < argc; i++) {
             file_paths.push_back(argv[i]);
         }
-        cout << "Starting client mode..." << endl;
-        cout << "Connecting to server at " << server_ip << endl;
+        std::cout << "Starting client mode..." << std::endl;
+        std::cout << "Connecting to server at " << server_ip << std::endl;
         client_mode(server_ip, file_paths);
     } else {
-        cout << "Usage:" << endl;
-        cout << "  localsend.exe                    - Start server mode" << endl;
-        cout << "  localsend.exe IP PATH1 PATH2 ... - Send files to server" << endl;
+        std::cout << "Usage:" << std::endl;
+        std::cout << "  localsend.exe                    - Start server mode" << std::endl;
+        std::cout << "  localsend.exe IP PATH1 PATH2 ... - Send files to server" << std::endl;
     }
 
     return 0;

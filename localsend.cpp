@@ -8,6 +8,7 @@
 #include <cstdlib>
 #include <thread>
 #include <chrono>
+#include <stdexcept>
 
 #pragma comment(lib, "ws2_32.lib")
 
@@ -15,6 +16,116 @@
 #define SERVER_PORT 9295
 
 using namespace std;
+
+class SocketWrapper {
+public:
+    int sock;
+    explicit SocketWrapper(int socket_fd) : sock(socket_fd) {}
+
+    void send_number(size_t number) {
+        ssize_t sent = send(sock, (char*)&number, sizeof(number), 0);
+        if (sent < 0 || static_cast<size_t>(sent) != sizeof(number)) {
+            throw std::runtime_error("Failed to send number");
+        }
+    }
+
+    size_t recv_number() {
+        size_t number;
+        ssize_t received = recv(sock, (char*)&number, sizeof(number), 0);
+        if (received < 0) {
+            throw std::runtime_error("Failed to receive number");
+        }
+        if (received == 0) {
+            throw std::runtime_error("Connection closed by peer while receiving number");
+        }
+        if (static_cast<size_t>(received) != sizeof(number)) {
+            throw std::runtime_error("Incomplete number received");
+        }
+        return number;
+    }
+
+    void send_data(const char* data, size_t length) {
+        size_t total_sent = 0;
+        while (total_sent < length) {
+            ssize_t sent = send(sock, data + total_sent, length - total_sent, 0);
+            if (sent < 0) {
+                throw std::runtime_error("Failed to send data");
+            }
+            total_sent += static_cast<size_t>(sent);
+        }
+    }
+
+    std::vector<char> recv_data(size_t length) {
+        std::vector<char> buffer(length);
+        size_t total_received = 0;
+
+        while (total_received < length) {
+            ssize_t received = recv(sock, buffer.data() + total_received, length - total_received, 0);
+            if (received < 0) {
+                throw std::runtime_error("Failed to receive data");
+            }
+            if (received == 0) {
+                throw std::runtime_error("Connection closed by peer while receiving data");
+            }
+            total_received += static_cast<size_t>(received);
+        }
+
+        return buffer;
+    }
+
+    void send_string(const std::string& data) {
+        size_t length = data.length();
+        send_number(length);
+        if (length > 0) {
+            send_data(data.c_str(), length);
+        }
+    }
+
+    std::string recv_string() {
+        size_t length = recv_number();
+        if (length == 0) {
+            return std::string();
+        }
+        std::vector<char> buffer = recv_data(length);
+        return std::string(buffer.data(), length);
+    }
+
+    void send_file(std::ifstream& file) {
+        if (!file.is_open()) {
+            throw std::runtime_error("File is not open for reading");
+        }
+
+        file.seekg(0, std::ios::end);
+        size_t file_size = static_cast<size_t>(file.tellg());
+        file.seekg(0, std::ios::beg);
+
+        send_number(file_size);
+
+        std::vector<char> buffer(BUFFER_SIZE);
+        while (file.read(buffer.data(), BUFFER_SIZE) || file.gcount() > 0) {
+            size_t bytes_to_send = static_cast<size_t>(file.gcount());
+            send_data(buffer.data(), bytes_to_send);
+        }
+    }
+
+    void recv_file(std::ofstream& file) {
+        if (!file.is_open()) {
+            throw std::runtime_error("File is not open for writing");
+        }
+
+        size_t file_size = recv_number();
+
+        std::vector<char> buffer(BUFFER_SIZE);
+        size_t bytes_received = 0;
+
+        while (bytes_received < file_size) {
+            size_t bytes_to_receive = std::min((size_t)BUFFER_SIZE, file_size - bytes_received);
+            std::vector<char> recv_buffer = recv_data(bytes_to_receive);
+            file.write(recv_buffer.data(), bytes_to_receive);
+            bytes_received += bytes_to_receive;
+        }
+    }
+};
 
 bool send_file(SOCKET sock, const string& file_path) {
     // Open file in binary mode
@@ -24,103 +135,31 @@ bool send_file(SOCKET sock, const string& file_path) {
         return false;
     }
 
-    // Get file size
-    file.seekg(0, ios::end);
-    long file_size = file.tellg();
-    file.seekg(0, ios::beg);
-
-    // Send file name length
     string file_name = file_path.substr(file_path.find_last_of("/\\") + 1);
-    int name_length = file_name.length();
 
-    if (send(sock, (char*)&name_length, sizeof(name_length), 0) <= 0) {
-        cerr << "Failed to send file name length" << endl;
-        file.close();
-        return false;
-    }
+    auto sock_wrap = SocketWrapper(sock);
+    sock_wrap.send_string(file_name);
+    sock_wrap.send_file(file);
 
-    // Send file name
-    if (send(sock, file_name.c_str(), name_length, 0) <= 0) {
-        cerr << "Failed to send file name" << endl;
-        file.close();
-        return false;
-    }
-
-    // Send file size
-    if (send(sock, (char*)&file_size, sizeof(file_size), 0) <= 0) {
-        cerr << "Failed to send file size" << endl;
-        file.close();
-        return false;
-    }
-
-    // Send file data
-    char buffer[BUFFER_SIZE];
-    while (file.read(buffer, BUFFER_SIZE) || file.gcount() > 0) {
-        int bytes_to_send = file.gcount();
-        if (send(sock, buffer, bytes_to_send, 0) <= 0) {
-            cerr << "Failed to send file data" << endl;
-            file.close();
-            return false;
-        }
-    }
-
-    file.close();
     cout << "File sent successfully: " << file_path << endl;
     return true;
 }
 
 bool receive_file(SOCKET sock) {
-    // Receive file name length
-    int name_length;
-    if (recv(sock, (char*)&name_length, sizeof(name_length), 0) <= 0) {
-        cerr << "Failed to receive file name length" << endl;
-        return false;
-    }
+    auto sock_wrap = SocketWrapper(sock);
 
-    // Receive file name
-    char* file_name = new char[name_length + 1];
-    if (recv(sock, file_name, name_length, 0) <= 0) {
-        cerr << "Failed to receive file name" << endl;
-        delete[] file_name;
-        return false;
-    }
-    file_name[name_length] = '\0';
-
-    // Receive file size
-    long file_size;
-    if (recv(sock, (char*)&file_size, sizeof(file_size), 0) <= 0) {
-        cerr << "Failed to receive file size" << endl;
-        delete[] file_name;
-        return false;
-    }
+    std::string file_name = sock_wrap.recv_string();
+    ofstream file(file_name, ios::binary);
 
     // Open file for writing
-    ofstream file(file_name, ios::binary);
     if (!file.is_open()) {
         cerr << "Failed to create file: " << file_name << endl;
-        delete[] file_name;
         return false;
     }
 
-    // Receive file data
-    char buffer[BUFFER_SIZE];
-    long bytes_received = 0;
-    while (bytes_received < file_size) {
-        int bytes_to_receive = min(BUFFER_SIZE, static_cast<int>(file_size - bytes_received));
-        int received = recv(sock, buffer, bytes_to_receive, 0);
-        if (received <= 0) {
-            cerr << "Failed to receive file data" << endl;
-            file.close();
-            delete[] file_name;
-            return false;
-        }
-        file.write(buffer, received);
-        bytes_received += received;
-    }
+    sock_wrap.recv_file(file);
 
-    file.close();
     cout << "File received successfully: " << file_name << endl;
-    delete[] file_name;
     return true;
 }
 

@@ -18,6 +18,15 @@
 
 namespace fs = std::filesystem;
 
+enum {
+    flag_start,
+    flag_end,
+    flag_root,
+    flag_file,
+    flag_directory,
+    flag_message,
+};
+
 std::string unique_path(fs::path path) {
     auto root = (path.parent_path() / path.stem()).string();
     auto ext = path.extension().string();
@@ -102,7 +111,9 @@ public:
         return std::string(buffer.data(), length);
     }
 
-    void send_file(std::ifstream& file) {
+    void send_file(const fs::path& path) {
+        std::ifstream file(path, std::ios::binary);
+
         if (!file.is_open()) {
             throw std::runtime_error("File is not open for reading");
         }
@@ -118,9 +129,13 @@ public:
             size_t bytes_to_send = static_cast<size_t>(file.gcount());
             send_data(buffer.data(), bytes_to_send);
         }
+
+        file.close();
     }
 
-    void recv_file(std::ofstream& file) {
+    void recv_file(const fs::path& path) {
+        std::ofstream file(path, std::ios::binary);
+
         if (!file.is_open()) {
             throw std::runtime_error("File is not open for writing");
         }
@@ -136,44 +151,88 @@ public:
             file.write(recv_buffer.data(), bytes_to_receive);
             bytes_received += bytes_to_receive;
         }
+
+        file.close();
     }
 };
 
-bool send_file(SOCKET sock, const fs::path& file_path) {
-    // Open file in binary mode
-    std::ifstream file(file_path, std::ios::binary);
-    if (!file.is_open()) {
-        std::cerr << "Failed to open file: " << file_path << std::endl;
+bool send_file(SocketWrapper sock, const fs::path& root_path, const fs::path& send_path) {
+    fs::path rel_path = fs::relative(send_path, root_path);
+    try {
+        if (fs::is_directory(send_path)) {
+            sock.send_number(flag_directory);
+            sock.send_string(rel_path.string());
+        } else {
+            sock.send_number(flag_file);
+            sock.send_string(rel_path.string());
+            sock.send_file(send_path);
+        }
+    } catch (...) {
+        std::cerr << "Failed to send file: " << send_path << std::endl;
         return false;
     }
-
-    std::string file_name = file_path.filename().string();
-
-    auto sock_wrap = SocketWrapper(sock);
-    sock_wrap.send_string(file_name);
-    sock_wrap.send_file(file);
-
-    std::cout << "File sent successfully: " << file_path << std::endl;
+    std::cout << "File sent successfully: " << (fs::is_directory(send_path) ? send_path / "" : send_path) << std::endl;
     return true;
 }
 
-bool receive_file(SOCKET sock) {
-    auto sock_wrap = SocketWrapper(sock);
+bool send_files(SocketWrapper sock, const std::vector<std::string>& send_paths) {
+    for (const fs::path& send_path : send_paths) {
+        sock.send_number(flag_root);
+        sock.send_string(send_path.filename().string());
+        if (fs::exists(send_path)) {
+            send_file(sock, send_path, send_path);
+            if (fs::is_directory(send_path)) {
+                for (const auto& entry : fs::recursive_directory_iterator(send_path)) {
+                    send_file(sock, send_path, entry);
+                }
+            }
+        }
+    }
+    sock.send_number(flag_end);
+    return true;
+}
 
-    std::string file_name = sock_wrap.recv_string();
-    file_name = unique_path(file_name);
-    std::ofstream file(file_name, std::ios::binary);
+bool receive_file(SocketWrapper sock) {
+    fs::path root_path, rel_path, full_path;
 
-    // Open file for writing
-    if (!file.is_open()) {
-        std::cerr << "Failed to create file: " << file_name << std::endl;
-        return false;
+    while (true) {
+        int flag = sock.recv_number();
+
+        switch (flag) {
+            case flag_root:
+                root_path = sock.recv_string();
+                root_path = unique_path(root_path);
+                break;
+
+            case flag_directory:
+                rel_path = sock.recv_string();
+                full_path = root_path / rel_path;
+                fs::create_directories(full_path);
+                std::cout << "File received successfully: " << full_path / "" << std::endl;
+                break;
+
+            case flag_file:
+                rel_path = sock.recv_string();
+                full_path = rel_path == "." ? root_path : root_path / rel_path;
+                if (full_path.parent_path() != "") {
+                    fs::create_directories(full_path.parent_path());
+                }
+                sock.recv_file(full_path);
+                std::cout << "File received successfully: " << full_path << std::endl;
+                break;
+
+            case flag_message:
+                break;
+
+            case flag_end:
+                return true;
+
+            default:
+                throw std::runtime_error("Unknown flag received: " + std::to_string(flag));
+        }
     }
 
-    sock_wrap.recv_file(file);
-
-    std::cout << "File received successfully: " << file_name << std::endl;
-    return true;
+    return false;
 }
 
 void server_mode() {
@@ -231,7 +290,8 @@ void server_mode() {
         std::cout << "Client connected from " << inet_ntoa(client_addr.sin_addr) << std::endl;
 
         // Handle client
-        receive_file(client_sock);
+        auto client_sock_wrap = SocketWrapper(client_sock);
+        receive_file(client_sock_wrap);
 
         closesocket(client_sock);
     }
@@ -288,11 +348,8 @@ void client_mode(const std::string& server_ip, const std::vector<std::string>& f
     std::cout << "Connected to server successfully" << std::endl;
 
     // Send files
-    for (const std::string& file_path : file_paths) {
-        if (!send_file(client_sock, file_path)) {
-            std::cerr << "Failed to send file: " << file_path << std::endl;
-        }
-    }
+    auto client_sock_wrap = SocketWrapper(client_sock);
+    send_files(client_sock_wrap, file_paths);
 
     closesocket(client_sock);
     WSACleanup();

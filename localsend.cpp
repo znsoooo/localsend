@@ -27,6 +27,37 @@ enum {
     flag_message,
 };
 
+std::string ansi_to_utf8(const std::string& text) {
+    int wlen = MultiByteToWideChar(CP_ACP, 0, text.c_str(), -1, NULL, 0);
+    std::wstring wstr(wlen, 0);
+    MultiByteToWideChar(CP_ACP, 0, text.c_str(), -1, &wstr[0], wlen);
+    int ulen = WideCharToMultiByte(CP_UTF8, 0, wstr.c_str(), -1, NULL, 0, NULL, NULL);
+    std::string result(ulen, 0);
+    WideCharToMultiByte(CP_UTF8, 0, wstr.c_str(), -1, &result[0], ulen, NULL, NULL);
+    result.resize(ulen - 1); // Remove the trailing \0
+    return result;
+}
+
+std::string utf8_to_ansi(const std::string& text) {
+    int wlen = MultiByteToWideChar(CP_UTF8, 0, text.c_str(), -1, NULL, 0);
+    std::wstring wstr(wlen, 0);
+    MultiByteToWideChar(CP_UTF8, 0, text.c_str(), -1, &wstr[0], wlen);
+    int alen = WideCharToMultiByte(CP_ACP, 0, wstr.c_str(), -1, NULL, 0, NULL, NULL);
+    std::string result(alen, 0);
+    WideCharToMultiByte(CP_ACP, 0, wstr.c_str(), -1, &result[0], alen, NULL, NULL);
+    result.resize(alen - 1); // Remove the trailing \0
+    return result;
+}
+
+std::string format_path(fs::path path) {
+    if (fs::is_directory(path)) {
+        path /= "";
+    }
+    path = path.lexically_normal().generic_string();
+    std::string result = "\"" + path.string() + "\"";
+    return utf8_to_ansi(result);
+}
+
 std::string unique_path(fs::path path) {
     auto root = (path.parent_path() / path.stem()).string();
     auto ext = path.extension().string();
@@ -168,10 +199,10 @@ bool send_file(SocketWrapper sock, const fs::path& root_path, const fs::path& se
             sock.send_file(send_path);
         }
     } catch (...) {
-        std::cerr << "Failed to send file: " << send_path << std::endl;
+        std::cerr << "Failed to send file: " << format_path(send_path) << std::endl;
         return false;
     }
-    std::cout << "File sent successfully: " << (fs::is_directory(send_path) ? send_path / "" : send_path) << std::endl;
+    std::cout << "File sent successfully: " << format_path(send_path) << std::endl;
     return true;
 }
 
@@ -208,7 +239,7 @@ bool receive_file(SocketWrapper sock) {
                 rel_path = sock.recv_string();
                 full_path = root_path / rel_path;
                 fs::create_directories(full_path);
-                std::cout << "File received successfully: " << full_path / "" << std::endl;
+                std::cout << "File received successfully: " << format_path(full_path) << std::endl;
                 break;
 
             case flag_file:
@@ -218,7 +249,7 @@ bool receive_file(SocketWrapper sock) {
                     fs::create_directories(full_path.parent_path());
                 }
                 sock.recv_file(full_path);
-                std::cout << "File received successfully: " << full_path << std::endl;
+                std::cout << "File received successfully: " << format_path(full_path) << std::endl;
                 break;
 
             case flag_message:
@@ -365,7 +396,7 @@ int main(int argc, char* argv[]) {
         std::string server_ip = argv[1];
         std::vector<std::string> file_paths;
         for (int i = 2; i < argc; i++) {
-            file_paths.push_back(argv[i]);
+            file_paths.push_back(ansi_to_utf8(argv[i]));
         }
         std::cout << "Starting client mode..." << std::endl;
         std::cout << "Connecting to server at " << server_ip << std::endl;

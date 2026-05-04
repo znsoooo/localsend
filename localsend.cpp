@@ -1,17 +1,31 @@
 #include <iostream>
-#include <fstream>
-#include <string>
 #include <vector>
-#include <winsock2.h>
-#include <windows.h>
-#include <ws2tcpip.h>
-#include <cstdlib>
-#include <thread>
-#include <chrono>
-#include <stdexcept>
+#include <fstream>
 #include <filesystem>
+#include <stdexcept>
+#include <cstring>
 
-#pragma comment(lib, "ws2_32.lib")
+#ifdef _WIN32
+    #include <winsock2.h>
+    #include <ws2tcpip.h>
+    #include <windows.h>
+    #pragma comment(lib, "ws2_32.lib")
+#else
+    #include <sys/socket.h>
+    #include <arpa/inet.h>
+    #include <unistd.h>
+    #include <errno.h>
+
+    #define SOCKET int
+    #define INVALID_SOCKET -1
+    #define SOCKET_ERROR -1
+    #define closesocket close
+
+    #define WSAStartup(a, b) 0
+    #define WSACleanup()
+    #define WSAGetLastError() errno
+    typedef struct {} WSADATA;
+#endif
 
 #define BUFFER_SIZE 4096
 #define SERVER_PORT 9295
@@ -28,6 +42,7 @@ enum {
 };
 
 std::string ansi_to_utf8(const std::string& text) {
+#ifdef _WIN32
     int wlen = MultiByteToWideChar(CP_ACP, 0, text.c_str(), -1, NULL, 0);
     std::wstring wstr(wlen, 0);
     MultiByteToWideChar(CP_ACP, 0, text.c_str(), -1, &wstr[0], wlen);
@@ -36,9 +51,13 @@ std::string ansi_to_utf8(const std::string& text) {
     WideCharToMultiByte(CP_UTF8, 0, wstr.c_str(), -1, &result[0], ulen, NULL, NULL);
     result.resize(ulen - 1); // Remove the trailing \0
     return result;
+#else
+    return text;
+#endif
 }
 
 std::string utf8_to_ansi(const std::string& text) {
+#ifdef _WIN32
     int wlen = MultiByteToWideChar(CP_UTF8, 0, text.c_str(), -1, NULL, 0);
     std::wstring wstr(wlen, 0);
     MultiByteToWideChar(CP_UTF8, 0, text.c_str(), -1, &wstr[0], wlen);
@@ -47,6 +66,9 @@ std::string utf8_to_ansi(const std::string& text) {
     WideCharToMultiByte(CP_ACP, 0, wstr.c_str(), -1, &result[0], alen, NULL, NULL);
     result.resize(alen - 1); // Remove the trailing \0
     return result;
+#else
+    return text;
+#endif
 }
 
 std::string format_path(fs::path path) {
@@ -270,7 +292,7 @@ void server_mode() {
     WSADATA wsa_data;
     SOCKET server_sock, client_sock;
     struct sockaddr_in server_addr, client_addr;
-    int client_len = sizeof(client_addr);
+    socklen_t client_len = sizeof(client_addr);
 
     // Initialize Winsock
     if (WSAStartup(MAKEWORD(2, 2), &wsa_data) != 0) {

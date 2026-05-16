@@ -96,55 +96,39 @@ public:
     int sock;
     explicit SocketWrapper(int socket_fd) : sock(socket_fd) {}
 
-    void send_number(size_t number) {
-        ssize_t sent = send(sock, (char*)&number, sizeof(number), 0);
-        if (sent < 0 || static_cast<size_t>(sent) != sizeof(number)) {
-            throw std::runtime_error("Failed to send number");
-        }
-    }
-
-    size_t recv_number() {
-        size_t number;
-        ssize_t received = recv(sock, (char*)&number, sizeof(number), 0);
-        if (received < 0) {
-            throw std::runtime_error("Failed to receive number");
-        }
-        if (received == 0) {
-            throw std::runtime_error("Connection closed by peer while receiving number");
-        }
-        if (static_cast<size_t>(received) != sizeof(number)) {
-            throw std::runtime_error("Incomplete number received");
-        }
-        return number;
-    }
-
-    void send_data(const char* data, size_t length) {
+    void send_data(const void* data, size_t length) {
         size_t total_sent = 0;
         while (total_sent < length) {
-            ssize_t sent = send(sock, data + total_sent, length - total_sent, 0);
+            ssize_t sent = send(sock, (char*)data + total_sent, length - total_sent, 0);
             if (sent < 0) {
                 throw std::runtime_error("Failed to send data");
             }
-            total_sent += static_cast<size_t>(sent);
+            total_sent += sent;
         }
     }
 
-    std::vector<char> recv_data(size_t length) {
-        std::vector<char> buffer(length);
+    void recv_data(void* data, size_t length) {
         size_t total_received = 0;
-
         while (total_received < length) {
-            ssize_t received = recv(sock, buffer.data() + total_received, length - total_received, 0);
+            ssize_t received = recv(sock, (char*)data + total_received, length - total_received, 0);
             if (received < 0) {
                 throw std::runtime_error("Failed to receive data");
             }
             if (received == 0) {
                 throw std::runtime_error("Connection closed by peer while receiving data");
             }
-            total_received += static_cast<size_t>(received);
+            total_received += received;
         }
+    }
 
-        return buffer;
+    void send_number(size_t number) {
+        send_data(&number, sizeof(number));
+    }
+
+    size_t recv_number() {
+        size_t number;
+        recv_data(&number, sizeof(number));
+        return number;
     }
 
     void send_string(const std::string& data) {
@@ -160,7 +144,8 @@ public:
         if (length == 0) {
             return std::string();
         }
-        std::vector<char> buffer = recv_data(length);
+        std::vector<char> buffer(length);
+        recv_data(buffer.data(), length);
         return std::string(buffer.data(), length);
     }
 
@@ -172,15 +157,12 @@ public:
         }
 
         file.seekg(0, std::ios::end);
-        size_t file_size = static_cast<size_t>(file.tellg());
+        send_number(file.tellg());
         file.seekg(0, std::ios::beg);
 
-        send_number(file_size);
-
-        std::vector<char> buffer(BUFFER_SIZE);
-        while (file.read(buffer.data(), BUFFER_SIZE) || file.gcount() > 0) {
-            size_t bytes_to_send = static_cast<size_t>(file.gcount());
-            send_data(buffer.data(), bytes_to_send);
+        char buffer[BUFFER_SIZE];
+        while (file.read(buffer, BUFFER_SIZE) || file.gcount() > 0) {
+            send_data(buffer, file.gcount());
         }
 
         file.close();
@@ -195,13 +177,13 @@ public:
 
         size_t file_size = recv_number();
 
-        std::vector<char> buffer(BUFFER_SIZE);
+        char buffer[BUFFER_SIZE];
         size_t bytes_received = 0;
 
         while (bytes_received < file_size) {
             size_t bytes_to_receive = std::min((size_t)BUFFER_SIZE, file_size - bytes_received);
-            std::vector<char> recv_buffer = recv_data(bytes_to_receive);
-            file.write(recv_buffer.data(), bytes_to_receive);
+            recv_data(buffer, bytes_to_receive);
+            file.write(buffer, bytes_to_receive);
             bytes_received += bytes_to_receive;
         }
 

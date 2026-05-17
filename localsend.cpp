@@ -260,7 +260,6 @@ bool send_file(SocketWrapper sock, const fs::path& root_path, const fs::path& se
             sock.send_file(send_path);
         }
     } catch (...) {
-        std::cerr << "Failed to send file: " << format_path(send_path) << std::endl;
         return false;
     }
     return true;
@@ -283,7 +282,7 @@ bool send_files(SocketWrapper sock, const std::vector<std::string>& send_paths) 
     return true;
 }
 
-bool receive_file(SocketWrapper sock) {
+bool receive_files(SocketWrapper sock) {
     fs::path root_path, rel_path, full_path;
 
     while (true) {
@@ -381,7 +380,11 @@ void server_mode() {
 
         // Handle client
         auto client_sock_wrap = SocketWrapper(client_sock);
-        receive_file(client_sock_wrap);
+        try {
+            receive_files(client_sock_wrap);
+        } catch (...) {
+            std::cerr << std::endl << "Error occurred while receiving files" << std::endl;
+        }
 
         closesocket(client_sock);
     }
@@ -439,7 +442,11 @@ void client_mode(const std::string& server_ip, const std::vector<std::string>& f
 
     // Send files
     auto client_sock_wrap = SocketWrapper(client_sock);
-    send_files(client_sock_wrap, file_paths);
+    try {
+        send_files(client_sock_wrap, file_paths);
+    } catch (...) {
+        std::cerr << std::endl << "Error occurred while sending files" << std::endl;
+    }
 
     closesocket(client_sock);
     WSACleanup();

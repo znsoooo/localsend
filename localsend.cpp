@@ -1,8 +1,10 @@
 #include <iostream>
 #include <vector>
+#include <chrono>
 #include <fstream>
 #include <filesystem>
 #include <stdexcept>
+#include <cmath>
 #include <cstring>
 
 #ifdef _WIN32
@@ -40,6 +42,45 @@ enum {
     flag_directory,
     flag_message,
 };
+
+void backspace(int n) {
+    if (n > 0) {
+        std::cout << std::string(n, '\b') << std::string(n, ' ') << std::string(n, '\b');
+    }
+}
+
+std::string MB(uint64_t size) {
+    double mb = size / 1024.0 / 1024.0;
+    mb = std::ceil(mb * 10.0) / 10.0;
+    std::stringstream ss;
+    ss << std::fixed << std::setprecision(1) << mb;
+    return ss.str();
+}
+
+void print_progress(uint64_t total_size, uint64_t received_size) {
+    static auto last_time = std::chrono::steady_clock::now();
+    static auto last_width = 0;
+
+    auto current_time = std::chrono::steady_clock::now();
+    auto duration = std::chrono::duration_cast<std::chrono::milliseconds>(current_time - last_time).count();
+
+    if (received_size == 0 || duration >= 200 || received_size >= total_size) {
+        if (received_size == 0 && total_size > 0) {
+            last_width = 0;
+        } else if (received_size < total_size) {
+            backspace(last_width);
+            std::string progress = " (" + MB(received_size) + "/" + MB(total_size) + " MB)";
+            std::cout << progress;
+            std::cout.flush();
+            last_width = progress.size();
+        } else {
+            backspace(last_width);
+            std::cout << " (" << MB(total_size) << " MB)" << std::endl;
+            last_width = 0;
+        }
+        last_time = current_time;
+    }
+}
 
 std::string ansi_to_utf8(const std::string& text) {
 #ifdef _WIN32
@@ -150,6 +191,9 @@ public:
     }
 
     void send_file(const fs::path& path) {
+        std::cout << "Send file: " << format_path(path);
+        std::cout.flush();
+
         std::ifstream file(path, std::ios::binary);
 
         if (!file.is_open()) {
@@ -157,18 +201,28 @@ public:
         }
 
         file.seekg(0, std::ios::end);
-        send_number(file.tellg());
+        size_t file_size = file.tellg();
+        send_number(file_size);
         file.seekg(0, std::ios::beg);
 
         char buffer[BUFFER_SIZE];
+        size_t bytes_received = 0;
+        print_progress(file_size, bytes_received);
+
         while (file.read(buffer, BUFFER_SIZE) || file.gcount() > 0) {
-            send_data(buffer, file.gcount());
+            size_t bytes_to_send = file.gcount();
+            send_data(buffer, bytes_to_send);
+            bytes_received += bytes_to_send;
+            print_progress(file_size, bytes_received);
         }
 
         file.close();
     }
 
     void recv_file(const fs::path& path) {
+        std::cout << "Recv file: " << format_path(path);
+        std::cout.flush();
+
         std::ofstream file(path, std::ios::binary);
 
         if (!file.is_open()) {
@@ -179,12 +233,14 @@ public:
 
         char buffer[BUFFER_SIZE];
         size_t bytes_received = 0;
+        print_progress(file_size, bytes_received);
 
         while (bytes_received < file_size) {
             size_t bytes_to_receive = std::min((size_t)BUFFER_SIZE, file_size - bytes_received);
             recv_data(buffer, bytes_to_receive);
             file.write(buffer, bytes_to_receive);
             bytes_received += bytes_to_receive;
+            print_progress(file_size, bytes_received);
         }
 
         file.close();
@@ -197,6 +253,7 @@ bool send_file(SocketWrapper sock, const fs::path& root_path, const fs::path& se
         if (fs::is_directory(send_path)) {
             sock.send_number(flag_directory);
             sock.send_string(rel_path.string());
+            std::cout << "Send file: " << format_path(send_path) << std::endl;
         } else {
             sock.send_number(flag_file);
             sock.send_string(rel_path.string());
@@ -206,7 +263,6 @@ bool send_file(SocketWrapper sock, const fs::path& root_path, const fs::path& se
         std::cerr << "Failed to send file: " << format_path(send_path) << std::endl;
         return false;
     }
-    std::cout << "File sent successfully: " << format_path(send_path) << std::endl;
     return true;
 }
 
@@ -243,7 +299,7 @@ bool receive_file(SocketWrapper sock) {
                 rel_path = sock.recv_string();
                 full_path = root_path / rel_path;
                 fs::create_directories(full_path);
-                std::cout << "File received successfully: " << format_path(full_path) << std::endl;
+                std::cout << "Recv file: " << format_path(full_path) << std::endl;
                 break;
 
             case flag_file:
@@ -253,7 +309,6 @@ bool receive_file(SocketWrapper sock) {
                     fs::create_directories(full_path.parent_path());
                 }
                 sock.recv_file(full_path);
-                std::cout << "File received successfully: " << format_path(full_path) << std::endl;
                 break;
 
             case flag_message:

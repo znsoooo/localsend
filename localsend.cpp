@@ -249,6 +249,7 @@ public:
 
 bool send_file(SocketWrapper sock, const fs::path& root_path, const fs::path& send_path) {
     fs::path rel_path = fs::relative(send_path, root_path);
+    rel_path = rel_path.lexically_normal().generic_string();  // Note: '\' might be file name in Linux
     try {
         if (fs::is_directory(send_path)) {
             sock.send_number(flag_directory);

@@ -1,3 +1,9 @@
+/*
+ * File: localsend.cpp
+ * From: https://github.com/znsoooo/localsend
+ * License: MIT License
+ */
+
 #include <iostream>
 #include <vector>
 #include <chrono>
@@ -33,6 +39,8 @@
 #define SERVER_PORT 9295
 
 namespace fs = std::filesystem;
+using std::chrono::steady_clock;
+using namespace std::literals::chrono_literals;
 
 enum {
     flag_start,
@@ -41,6 +49,11 @@ enum {
     flag_file,
     flag_directory,
     flag_message,
+};
+
+struct Stat {
+    size_t count_files;
+    size_t count_size;
 };
 
 void backspace(int n) {
@@ -58,13 +71,11 @@ std::string MB(uint64_t size) {
 }
 
 void print_progress(uint64_t total_size, uint64_t received_size) {
-    static auto last_time = std::chrono::steady_clock::now();
+    static auto last_time = steady_clock::now();
     static auto last_width = 0;
 
-    auto current_time = std::chrono::steady_clock::now();
-    auto duration = std::chrono::duration_cast<std::chrono::milliseconds>(current_time - last_time).count();
-
-    if (received_size == 0 || duration >= 200 || received_size >= total_size) {
+    auto current_time = steady_clock::now();
+    if (received_size == 0 || current_time - last_time >= 500ms || received_size >= total_size) {
         if (received_size == 0 && total_size > 0) {
             last_width = 0;
         } else if (received_size < total_size) {
@@ -80,6 +91,11 @@ void print_progress(uint64_t total_size, uint64_t received_size) {
         }
         last_time = current_time;
     }
+}
+
+void print_summary(const Stat& stat, const std::chrono::time_point<steady_clock>& start_time) {
+    auto elapsed_time = (steady_clock::now() - start_time) / 1ms + 1;
+    std::cout << "Successfully transferred " << stat.count_files << " files, total " << MB(stat.count_size) << " MB, average " << MB(stat.count_size / elapsed_time * 1000) << " MB/s." << std::endl;
 }
 
 std::string ansi_to_utf8(const std::string& text) {
@@ -190,7 +206,7 @@ public:
         return std::string(buffer.data(), length);
     }
 
-    void send_file(const fs::path& path) {
+    size_t send_file(const fs::path& path) {
         std::cout << "Send file: " << format_path(path);
         std::cout.flush();
 
@@ -217,9 +233,11 @@ public:
         }
 
         file.close();
+
+        return file_size;
     }
 
-    void recv_file(const fs::path& path) {
+    size_t recv_file(const fs::path& path) {
         std::cout << "Recv file: " << format_path(path);
         std::cout.flush();
 
@@ -244,46 +262,50 @@ public:
         }
 
         file.close();
+
+        return file_size;
     }
 };
 
-bool send_file(SocketWrapper sock, const fs::path& root_path, const fs::path& send_path) {
+bool send_file(SocketWrapper sock, const fs::path& root_path, const fs::path& send_path, Stat& stat) {
     fs::path rel_path = fs::relative(send_path, root_path);
     rel_path = rel_path.lexically_normal().generic_string();  // Note: '\' might be file name in Linux
-    try {
-        if (fs::is_directory(send_path)) {
-            sock.send_number(flag_directory);
-            sock.send_string(rel_path.string());
-            std::cout << "Send file: " << format_path(send_path) << std::endl;
-        } else {
-            sock.send_number(flag_file);
-            sock.send_string(rel_path.string());
-            sock.send_file(send_path);
-        }
-    } catch (...) {
-        return false;
+    if (fs::is_directory(send_path)) {
+        sock.send_number(flag_directory);
+        sock.send_string(rel_path.string());
+        std::cout << "Send file: " << format_path(send_path) << std::endl;
+    } else {
+        sock.send_number(flag_file);
+        sock.send_string(rel_path.string());
+        stat.count_size += sock.send_file(send_path);
+        stat.count_files++;
     }
     return true;
 }
 
 bool send_files(SocketWrapper sock, const std::vector<std::string>& send_paths) {
+    Stat stat = {0};
+    auto start_time = steady_clock::now();
     for (const fs::path& send_path : send_paths) {
         sock.send_number(flag_root);
         sock.send_string(send_path.filename().string());
         if (fs::exists(send_path)) {
-            send_file(sock, send_path, send_path);
+            send_file(sock, send_path, send_path, stat);
             if (fs::is_directory(send_path)) {
                 for (const auto& entry : fs::recursive_directory_iterator(send_path)) {
-                    send_file(sock, send_path, entry);
+                    send_file(sock, send_path, entry, stat);
                 }
             }
         }
     }
     sock.send_number(flag_end);
+    print_summary(stat, start_time);
     return true;
 }
 
 bool receive_files(SocketWrapper sock) {
+    Stat stat = {0};
+    auto start_time = steady_clock::now();
     fs::path root_path, rel_path, full_path;
 
     while (true) {
@@ -308,13 +330,15 @@ bool receive_files(SocketWrapper sock) {
                 if (full_path.parent_path() != "") {
                     fs::create_directories(full_path.parent_path());
                 }
-                sock.recv_file(full_path);
+                stat.count_size += sock.recv_file(full_path);
+                stat.count_files++;
                 break;
 
             case flag_message:
                 break;
 
             case flag_end:
+                print_summary(stat, start_time);
                 return true;
 
             default:

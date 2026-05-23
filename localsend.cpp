@@ -52,8 +52,8 @@ enum {
 };
 
 struct Stat {
-    size_t count_files;
-    size_t count_size;
+    uint64_t count_files;
+    uint64_t count_size;
 };
 
 void backspace(int n) {
@@ -178,12 +178,12 @@ public:
         }
     }
 
-    void send_number(size_t number) {
+    void send_number(uint64_t number) {
         send_data(&number, sizeof(number));
     }
 
-    size_t recv_number() {
-        size_t number;
+    uint64_t recv_number() {
+        uint64_t number;
         recv_data(&number, sizeof(number));
         return number;
     }
@@ -206,7 +206,7 @@ public:
         return std::string(buffer.data(), length);
     }
 
-    size_t send_file(const fs::path& path) {
+    uint64_t send_file(const fs::path& path) {
         std::cout << "Send file: " << format_path(path);
         std::cout.flush();
 
@@ -217,16 +217,16 @@ public:
         }
 
         file.seekg(0, std::ios::end);
-        size_t file_size = file.tellg();
+        uint64_t file_size = file.tellg();
         send_number(file_size);
         file.seekg(0, std::ios::beg);
 
         char buffer[BUFFER_SIZE];
-        size_t bytes_received = 0;
+        uint64_t bytes_received = 0;
         print_progress(file_size, bytes_received);
 
         while (file.read(buffer, BUFFER_SIZE) || file.gcount() > 0) {
-            size_t bytes_to_send = file.gcount();
+            uint64_t bytes_to_send = file.gcount();
             send_data(buffer, bytes_to_send);
             bytes_received += bytes_to_send;
             print_progress(file_size, bytes_received);
@@ -237,7 +237,7 @@ public:
         return file_size;
     }
 
-    size_t recv_file(const fs::path& path) {
+    uint64_t recv_file(const fs::path& path) {
         std::cout << "Recv file: " << format_path(path);
         std::cout.flush();
 
@@ -247,14 +247,14 @@ public:
             throw std::runtime_error("File is not open for writing");
         }
 
-        size_t file_size = recv_number();
+        uint64_t file_size = recv_number();
 
         char buffer[BUFFER_SIZE];
-        size_t bytes_received = 0;
+        uint64_t bytes_received = 0;
         print_progress(file_size, bytes_received);
 
         while (bytes_received < file_size) {
-            size_t bytes_to_receive = std::min((size_t)BUFFER_SIZE, file_size - bytes_received);
+            uint64_t bytes_to_receive = std::min((uint64_t)BUFFER_SIZE, file_size - bytes_received);
             recv_data(buffer, bytes_to_receive);
             file.write(buffer, bytes_to_receive);
             bytes_received += bytes_to_receive;

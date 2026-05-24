@@ -7,6 +7,7 @@
 #include <iostream>
 #include <vector>
 #include <chrono>
+#include <thread>
 #include <fstream>
 #include <filesystem>
 #include <stdexcept>
@@ -377,7 +378,7 @@ void server_mode() {
 
     // Bind socket
     if (bind(server_sock, (struct sockaddr*)&server_addr, sizeof(server_addr)) == SOCKET_ERROR) {
-        std::cerr << "Failed to bind socket" << std::endl;
+        std::cerr << "Failed to bind on port " << SERVER_PORT << std::endl;
         closesocket(server_sock);
         WSACleanup();
         return;
@@ -482,6 +483,7 @@ int main(int argc, char* argv[]) {
         // Server mode
         std::cout << "Starting server mode..." << std::endl;
         server_mode();
+        std::this_thread::sleep_for(2s);
     } else if (argc > 2) {
         // Client mode
         std::string server_ip = argv[1];

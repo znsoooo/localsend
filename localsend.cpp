@@ -65,6 +65,7 @@ enum {
 struct Stat {
     uint64_t count_files;
     uint64_t count_size;
+    uint64_t count_skip;
 };
 
 void backspace(int n) {
@@ -124,7 +125,11 @@ void print_progress(uint64_t total_size, uint64_t received_size) {
 
 void print_summary(const Stat& stat, const std::chrono::time_point<steady_clock>& start_time) {
     auto elapsed_time = (steady_clock::now() - start_time) / 1ms + 1;
-    std::cout << "Successfully transferred " << stat.count_files << " files, total " << MB(stat.count_size) << " MB, average " << MB(stat.count_size / elapsed_time * 1000) << " MB/s." << std::endl;
+    std::cout << "Successfully transferred " << stat.count_files << " files, "
+              << (stat.count_skip ? std::to_string(stat.count_skip) + " files skipped, " : "")
+              << "total " << MB(stat.count_size) << " MB, "
+              << "average " << MB(stat.count_size / elapsed_time * 1000) << " MB/s."
+              << std::endl;
 }
 
 std::string ansi_to_utf8(const std::string& text) {
@@ -157,11 +162,13 @@ std::string utf8_to_ansi(const std::string& text) {
 #endif
 }
 
-std::string format_path(fs::path path) {
-    if (fs::is_directory(path)) {
-        path /= "";
+std::string format_path(fs::path path, bool normalize = true) {
+    if (normalize) {
+        if (fs::is_directory(path)) {
+            path /= "";
+        }
+        path = path.lexically_normal().generic_string();
     }
-    path = path.lexically_normal().generic_string();
     std::string result = "\"" + path.string() + "\"";
     return utf8_to_ansi(result);
 }
@@ -325,6 +332,11 @@ bool send_files(SocketWrapper sock, const std::vector<std::string>& send_paths) 
                     send_file(sock, send_path, entry, stat);
                 }
             }
+        } else {
+            std::cout << "Send skip: " << format_path(send_path, false) << std::endl;
+            sock.send_number(flag_message);
+            sock.send_string(send_path.string());
+            stat.count_skip++;
         }
     }
     sock.send_number(flag_end);
@@ -364,6 +376,8 @@ bool receive_files(SocketWrapper sock) {
                 break;
 
             case flag_message:
+                std::cout << "Recv skip: " << format_path(sock.recv_string(), false) << std::endl;
+                stat.count_skip++;
                 break;
 
             case flag_end:

@@ -34,6 +34,16 @@
     #define WSACleanup()
     #define WSAGetLastError() errno
     typedef struct {} WSADATA;
+
+    // about print_ips
+    #include <ifaddrs.h>
+    typedef struct ifaddrs addrinfo;
+    typedef struct sockaddr_in sockaddr_in;
+    #define ai_next ifa_next
+    #define ai_addr ifa_addr
+    #define freeaddrinfo freeifaddrs
+    #define ai_family ai_addr && addr->ai_addr->sa_family  // without '()'
+    #define getaddrinfo(hostname, servname, hints, addrs) getifaddrs(addrs)
 #endif
 
 #define BUFFER_SIZE 4096
@@ -69,6 +79,24 @@ std::string MB(uint64_t size) {
     std::stringstream ss;
     ss << std::fixed << std::setprecision(1) << mb;
     return ss.str();
+}
+
+void print_ips() {
+    addrinfo* addrs;
+    if (getaddrinfo("", nullptr, nullptr, &addrs) == 0) {
+        std::cout << "Binding to IP address ";
+        int count = 0;
+        for (addrinfo* addr = addrs; addr != nullptr; addr = addr->ai_next) {
+            if (addr->ai_family == AF_INET) {
+                sockaddr_in* addr_in = (sockaddr_in*)addr->ai_addr;
+                char ip[INET_ADDRSTRLEN];
+                inet_ntop(AF_INET, &addr_in->sin_addr, ip, INET_ADDRSTRLEN);
+                std::cout << (count++ ? ", " : "") << ip;
+            }
+        }
+        std::cout << std::endl;
+        freeaddrinfo(addrs);
+    }
 }
 
 void print_progress(uint64_t total_size, uint64_t received_size) {
@@ -392,7 +420,8 @@ void server_mode() {
         return;
     }
 
-    std::cout << "Server listening on port " << SERVER_PORT << std::endl;
+    print_ips();
+    std::cout << "Listening on port " << SERVER_PORT << std::endl;
 
     while (true) {
         // Accept connection
